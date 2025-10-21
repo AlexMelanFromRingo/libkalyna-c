@@ -3,7 +3,7 @@
 Reference and optimized implementations of the **Kalyna block cipher** (DSTU 7624:2014), the Ukrainian national encryption standard.
 
 [![Standard](https://img.shields.io/badge/DSTU-7624%3A2014-blue.svg)](https://www.dsszzi.gov.ua/)
-[![License](https://img.shields.io/badge/license-Reference-green.svg)]()
+[![License](https://img.shields.io/badge/license-Reference-green.svg)](./LICENSE)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
 ## 🚀 Quick Start
