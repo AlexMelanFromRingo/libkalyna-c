@@ -12,10 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-
-
-typedef unsigned char uint8_t;
-typedef unsigned long long uint64_t;
+#include <stdint.h>
 
 /*!
  * Context to store Kalyna cipher parameters.
@@ -57,7 +54,7 @@ int KalynaDelete(kalyna_t* ctx);
  * @param key Kalyna enciphering key.
  * @param ctx Initialized cipher context.
  */
-void KalynaKeyExpand(uint64_t* key, kalyna_t* ctx);
+void KalynaKeyExpand(const uint64_t* key, kalyna_t* ctx);
 
 /*!
  * Encipher plaintext using Kalyna symmetric block cipher.
@@ -69,7 +66,7 @@ void KalynaKeyExpand(uint64_t* key, kalyna_t* ctx);
  * @param ctx Initialized cipher context with precomputed round keys.
  * @param ciphertext The result of enciphering.
  */
-void KalynaEncipher(uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext);
+void KalynaEncipher(const uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext);
 
 /*!
  * Decipher ciphertext using Kalyna symmetric block cipher.
@@ -81,7 +78,16 @@ void KalynaEncipher(uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext);
  * @param ctx Initialized cipher context with precomputed round keys.
  * @param plaintext The result of deciphering.
  */
-void KalynaDecipher(uint64_t* ciphertext, kalyna_t* ctx, uint64_t* plaintext);
+void KalynaDecipher(const uint64_t* ciphertext, kalyna_t* ctx, uint64_t* plaintext);
+
+/*!
+ * Securely zero memory to prevent sensitive data leakage.
+ * Uses volatile pointer to prevent compiler optimization.
+ *
+ * @param ptr Pointer to memory to be zeroed.
+ * @param size Number of bytes to zero.
+ */
+void kalyna_secure_zero(void* ptr, size_t size);
 
 #endif  /* KALYNA_H */
 

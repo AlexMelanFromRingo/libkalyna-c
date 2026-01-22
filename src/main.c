@@ -338,6 +338,6 @@ void print (size_t data_size, uint64_t data [])
         if (! (i % 16)) printf ("    ");
         printf ("%02X", (unsigned int) tmp [i]);
         if (!((i + 1) % 16)) printf ("\n");
-    };
+    }
     printf ("\n");
-};
+}

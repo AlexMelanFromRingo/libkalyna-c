@@ -3,7 +3,7 @@
 CC = gcc
 RM = rm -f
 
-CFLAGS += -Wall -Wextra
+CFLAGS += -Wall -Wextra -Wpedantic -O2 -fstack-protector-strong
 
 SRCS = kalyna.c main.c tables.c
 OBJS = kalyna.o main.o tables.o

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
+        exclude:
+          - os: macos-latest
+            compiler: gcc
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+
+    - name: Set compiler
+      run: |
+        if [ "${{ matrix.compiler }}" = "gcc" ]; then
+          echo "CC=gcc" >> $GITHUB_ENV
+        else
+          echo "CC=clang" >> $GITHUB_ENV
+        fi
+
+    - name: Build
+      working-directory: src
+      run: make clean && make
+
+    - name: Run tests
+      working-directory: src
+      run: make test
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install cppcheck
+      run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+    - name: Run cppcheck
+      run: cppcheck --enable=warning,style,performance --error-exitcode=1 --suppress=missingIncludeSystem src/*.c src/*.h
+
+  memory-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install valgrind
+      run: sudo apt-get update && sudo apt-get install -y valgrind
+
+    - name: Build with debug symbols
+      working-directory: src
+      run: |
+        make clean
+        CFLAGS="-g -O0" make
+
+    - name: Run valgrind
+      working-directory: src
+      run: valgrind --leak-check=full --error-exitcode=1 ./kalyna

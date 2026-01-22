@@ -9,8 +9,51 @@
 #include "tables.h"
 
 
+/* Forward declarations of internal static functions */
+static void SubBytes(kalyna_t* ctx);
+static void InvSubBytes(kalyna_t* ctx);
+static void ShiftRows(kalyna_t* ctx);
+static void InvShiftRows(kalyna_t* ctx);
+static uint8_t MultiplyGF(uint8_t x, uint8_t y);
+static void MatrixMultiply(kalyna_t* ctx, uint8_t matrix[8][8]);
+static void MixColumns(kalyna_t* ctx);
+static void InvMixColumns(kalyna_t* ctx);
+static void EncipherRound(kalyna_t* ctx);
+static void DecipherRound(kalyna_t* ctx);
+static void AddRoundKey(int round, kalyna_t* ctx);
+static void SubRoundKey(int round, kalyna_t* ctx);
+static void AddRoundKeyExpand(const uint64_t* value, kalyna_t* ctx);
+static void XorRoundKey(int round, kalyna_t* ctx);
+static void XorRoundKeyExpand(const uint64_t* value, kalyna_t* ctx);
+static void Rotate(size_t state_size, uint64_t* state_value);
+static void ShiftLeft(size_t state_size, uint64_t* state_value);
+static void RotateLeft(size_t state_size, uint64_t* state_value);
+static void KeyExpandKt(const uint64_t* key, kalyna_t* ctx, uint64_t* kt);
+static void KeyExpandEven(const uint64_t* key, const uint64_t* kt, kalyna_t* ctx);
+static void KeyExpandOdd(kalyna_t* ctx);
+static uint8_t* WordsToBytes(size_t length, uint64_t* words);
+static uint64_t* BytesToWords(size_t length, uint8_t* bytes);
+static uint64_t ReverseWord(uint64_t word);
+static int IsBigEndian(void);
+
+
+void kalyna_secure_zero(void* ptr, size_t size) {
+    volatile uint8_t* p = (volatile uint8_t*)ptr;
+    while (size--) {
+        *p++ = 0;
+    }
+}
+
+
 kalyna_t* KalynaInit(size_t block_size, size_t key_size) {
     kalyna_t* ctx = (kalyna_t*)malloc(sizeof(kalyna_t));
+    if (ctx == NULL) {
+        perror("Could not allocate memory for cipher context.");
+        return NULL;
+    }
+
+    ctx->state = NULL;
+    ctx->round_keys = NULL;
 
     if (block_size == kBLOCK_128) {
         ctx->nb = kBLOCK_128 / kBITS_IN_WORD;
@@ -22,6 +65,7 @@ kalyna_t* KalynaInit(size_t block_size, size_t key_size) {
             ctx->nr = kNR_256;
         } else {
             fprintf(stderr, "Error: unsupported key size.\n");
+            free(ctx);
             return NULL;
         }
     } else if (block_size == 256) {
@@ -34,6 +78,7 @@ kalyna_t* KalynaInit(size_t block_size, size_t key_size) {
             ctx->nr = kNR_512;
         } else {
             fprintf(stderr, "Error: unsupported key size.\n");
+            free(ctx);
             return NULL;
         }
     } else if (block_size == kBLOCK_512) {
@@ -43,43 +88,74 @@ kalyna_t* KalynaInit(size_t block_size, size_t key_size) {
             ctx->nr = kNR_512;
         } else {
             fprintf(stderr, "Error: unsupported key size.\n");
+            free(ctx);
             return NULL;
         }
     } else {
         fprintf(stderr, "Error: unsupported block size.\n");
+        free(ctx);
         return NULL;
     }
 
     ctx->state = (uint64_t*)calloc(ctx->nb, sizeof(uint64_t));
-    if (ctx->state == NULL)
+    if (ctx->state == NULL) {
         perror("Could not allocate memory for cipher state.");
+        free(ctx);
+        return NULL;
+    }
 
-    ctx->round_keys = (uint64_t**)calloc(ctx->nr + 1, sizeof(uint64_t**));
-    if (ctx->round_keys == NULL)
+    ctx->round_keys = (uint64_t**)calloc(ctx->nr + 1, sizeof(uint64_t*));
+    if (ctx->round_keys == NULL) {
         perror("Could not allocate memory for cipher round keys.");
+        free(ctx->state);
+        free(ctx);
+        return NULL;
+    }
 
     for (size_t i = 0; i < ctx->nr + 1; ++i) {
         ctx->round_keys[i] = (uint64_t*)calloc(ctx->nb, sizeof(uint64_t));
-        if (ctx->round_keys[i] == NULL)
+        if (ctx->round_keys[i] == NULL) {
             perror("Could not allocate memory for cipher round keys.");
+            for (size_t j = 0; j < i; ++j) {
+                free(ctx->round_keys[j]);
+            }
+            free(ctx->round_keys);
+            free(ctx->state);
+            free(ctx);
+            return NULL;
+        }
     }
     return ctx;
 }
 
 
 int KalynaDelete(kalyna_t* ctx) {
-    free(ctx->state);
-    for (size_t i = 0; i < ctx->nr + 1; ++i) {
-        free(ctx->round_keys[i]);
+    if (ctx == NULL) {
+        return -1;
     }
-    free(ctx->round_keys);
+
+    if (ctx->state != NULL) {
+        kalyna_secure_zero(ctx->state, ctx->nb * sizeof(uint64_t));
+        free(ctx->state);
+    }
+
+    if (ctx->round_keys != NULL) {
+        for (size_t i = 0; i < ctx->nr + 1; ++i) {
+            if (ctx->round_keys[i] != NULL) {
+                kalyna_secure_zero(ctx->round_keys[i], ctx->nb * sizeof(uint64_t));
+                free(ctx->round_keys[i]);
+            }
+        }
+        free(ctx->round_keys);
+    }
+
+    kalyna_secure_zero(ctx, sizeof(kalyna_t));
     free(ctx);
-    ctx = NULL;
     return 0;
 }
 
 
-void SubBytes(kalyna_t* ctx) {
+static void SubBytes(kalyna_t* ctx) {
     uint64_t* s = ctx->state; /* For shorter expressions. */
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = sboxes_enc[0][s[i] & 0x00000000000000FFULL] |
@@ -93,7 +169,7 @@ void SubBytes(kalyna_t* ctx) {
     }
 }
 
-void InvSubBytes(kalyna_t* ctx) {
+static void InvSubBytes(kalyna_t* ctx) {
     uint64_t* s = ctx->state; /* For shorter expressions. */
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = sboxes_dec[0][s[i] & 0x00000000000000FFULL] |
@@ -108,11 +184,13 @@ void InvSubBytes(kalyna_t* ctx) {
 }
 
 
-void ShiftRows(kalyna_t* ctx) {
+static void ShiftRows(kalyna_t* ctx) {
     int shift = -1;
+    size_t state_bytes = ctx->nb * sizeof(uint64_t);
 
     uint8_t* state = WordsToBytes(ctx->nb, ctx->state);
-    uint8_t* nstate = (uint8_t*) malloc(ctx->nb * sizeof(uint64_t));
+    uint8_t* nstate = (uint8_t*) malloc(state_bytes);
+    uint64_t* old_state = ctx->state;
 
     for (size_t row = 0; row < sizeof(uint64_t); ++row) {
         if (row % (sizeof(uint64_t) / ctx->nb) == 0)
@@ -122,15 +200,17 @@ void ShiftRows(kalyna_t* ctx) {
         }
     }
 
-    ctx->state = BytesToWords(ctx->nb * sizeof(uint64_t), nstate);
-    free(state);
+    ctx->state = BytesToWords(state_bytes, nstate);
+    free(old_state);
 }
 
-void InvShiftRows(kalyna_t* ctx) {
+static void InvShiftRows(kalyna_t* ctx) {
     int shift = -1;
+    size_t state_bytes = ctx->nb * sizeof(uint64_t);
 
     uint8_t* state = WordsToBytes(ctx->nb, ctx->state);
-    uint8_t* nstate = (uint8_t*) malloc(ctx->nb * sizeof(uint64_t));
+    uint8_t* nstate = (uint8_t*) malloc(state_bytes);
+    uint64_t* old_state = ctx->state;
 
     for (size_t row = 0; row < sizeof(uint64_t); ++row) {
         if (row % (sizeof(uint64_t) / ctx->nb) == 0)
@@ -140,12 +220,12 @@ void InvShiftRows(kalyna_t* ctx) {
         }
     }
 
-    ctx->state = BytesToWords(ctx->nb * sizeof(uint64_t), nstate);
-    free(state);
+    ctx->state = BytesToWords(state_bytes, nstate);
+    free(old_state);
 }
 
 
-uint8_t MultiplyGF(uint8_t x, uint8_t y) {
+static uint8_t MultiplyGF(uint8_t x, uint8_t y) {
     uint8_t r = 0;
     uint8_t hbit = 0;
     for (size_t i = 0; i < kBITS_IN_BYTE; ++i) {
@@ -160,7 +240,7 @@ uint8_t MultiplyGF(uint8_t x, uint8_t y) {
     return r;
 }
 
-void MatrixMultiply(kalyna_t* ctx, uint8_t matrix[8][8]) {
+static void MatrixMultiply(kalyna_t* ctx, uint8_t matrix[8][8]) {
     int row, b;
     uint8_t product;
     uint64_t result;
@@ -179,62 +259,62 @@ void MatrixMultiply(kalyna_t* ctx, uint8_t matrix[8][8]) {
     }
 }
 
-void MixColumns(kalyna_t* ctx) {
+static void MixColumns(kalyna_t* ctx) {
     MatrixMultiply(ctx, mds_matrix);
 }
 
-void InvMixColumns(kalyna_t* ctx) {
+static void InvMixColumns(kalyna_t* ctx) {
     MatrixMultiply(ctx, mds_inv_matrix);
 }
 
 
-void EncipherRound(kalyna_t* ctx) {
+static void EncipherRound(kalyna_t* ctx) {
     SubBytes(ctx);
     ShiftRows(ctx);
     MixColumns(ctx);
 }
 
-void DecipherRound(kalyna_t* ctx) {
+static void DecipherRound(kalyna_t* ctx) {
     InvMixColumns(ctx);
     InvShiftRows(ctx);
     InvSubBytes(ctx);
 }
 
-void AddRoundKey(int round, kalyna_t* ctx) {
+static void AddRoundKey(int round, kalyna_t* ctx) {
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = ctx->state[i] + ctx->round_keys[round][i];
     }
 }
 
-void SubRoundKey(int round, kalyna_t* ctx) {
+static void SubRoundKey(int round, kalyna_t* ctx) {
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = ctx->state[i] - ctx->round_keys[round][i];
     }
 }
 
 
-void AddRoundKeyExpand(uint64_t* value, kalyna_t* ctx) {
+static void AddRoundKeyExpand(const uint64_t* value, kalyna_t* ctx) {
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = ctx->state[i] + value[i];
     }
 }
 
 
-void XorRoundKey(int round, kalyna_t* ctx) {
+static void XorRoundKey(int round, kalyna_t* ctx) {
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = ctx->state[i] ^ ctx->round_keys[round][i];
     }
 }
 
 
-void XorRoundKeyExpand(uint64_t* value, kalyna_t* ctx) {
+static void XorRoundKeyExpand(const uint64_t* value, kalyna_t* ctx) {
     for (size_t i = 0; i < ctx->nb; ++i) {
         ctx->state[i] = ctx->state[i] ^ value[i];
     }
 }
 
 
-void Rotate(size_t state_size, uint64_t* state_value) {
+static void Rotate(size_t state_size, uint64_t* state_value) {
     uint64_t temp = state_value[0];
     for (size_t i = 1; i < state_size; ++i) {
         state_value[i - 1] = state_value[i];
@@ -243,13 +323,13 @@ void Rotate(size_t state_size, uint64_t* state_value) {
 }
 
 
-void ShiftLeft(size_t state_size, uint64_t* state_value) {
+static void ShiftLeft(size_t state_size, uint64_t* state_value) {
     for (size_t i = 0; i < state_size; ++i) {
         state_value[i] <<= 1;
     }
 }
 
-void RotateLeft(size_t state_size, uint64_t* state_value) {
+static void RotateLeft(size_t state_size, uint64_t* state_value) {
     size_t rotate_bytes = 2 * state_size + 3;
     size_t bytes_num = state_size * (kBITS_IN_WORD / kBITS_IN_BYTE);
 
@@ -261,13 +341,14 @@ void RotateLeft(size_t state_size, uint64_t* state_value) {
     memmove(bytes, bytes + rotate_bytes, bytes_num - rotate_bytes);
     memcpy(bytes + bytes_num - rotate_bytes, buffer, rotate_bytes);
 
-    state_value = BytesToWords(bytes_num, bytes);
+    /* Convert back to words - modifies in place for big endian */
+    (void)BytesToWords(bytes_num, bytes);
 
     free(buffer);
 }
 
 
-void KeyExpandKt(uint64_t* key, kalyna_t* ctx, uint64_t* kt) {
+static void KeyExpandKt(const uint64_t* key, kalyna_t* ctx, uint64_t* kt) {
     uint64_t* k0 = (uint64_t*) malloc(ctx->nb * sizeof(uint64_t));
     uint64_t* k1 = (uint64_t*) malloc(ctx->nb * sizeof(uint64_t));
 
@@ -295,7 +376,7 @@ void KeyExpandKt(uint64_t* key, kalyna_t* ctx, uint64_t* kt) {
 }
 
 
-void KeyExpandEven(uint64_t* key, uint64_t* kt, kalyna_t* ctx) {
+static void KeyExpandEven(const uint64_t* key, const uint64_t* kt, kalyna_t* ctx) {
     uint64_t* initial_data = (uint64_t*) malloc(ctx->nk * sizeof(uint64_t));
     uint64_t* kt_round = (uint64_t*) malloc(ctx->nb * sizeof(uint64_t));
     uint64_t* tmv = (uint64_t*) malloc(ctx->nb * sizeof(uint64_t));
@@ -356,14 +437,17 @@ void KeyExpandEven(uint64_t* key, uint64_t* kt, kalyna_t* ctx) {
     free(tmv);
 }
 
-void KeyExpandOdd(kalyna_t* ctx) {
+static void KeyExpandOdd(kalyna_t* ctx) {
     for (size_t i = 1; i < ctx->nr; i += 2) {
         memcpy(ctx->round_keys[i], ctx->round_keys[i - 1], ctx->nb * sizeof(uint64_t));
         RotateLeft(ctx->nb, ctx->round_keys[i]);
     }
 }
 
-void KalynaKeyExpand(uint64_t* key, kalyna_t* ctx) {
+void KalynaKeyExpand(const uint64_t* key, kalyna_t* ctx) {
+    if (key == NULL || ctx == NULL) {
+        return;
+    }
     uint64_t* kt = (uint64_t*) malloc(ctx->nb * sizeof(uint64_t));
     KeyExpandKt(key, ctx, kt);
     KeyExpandEven(key, kt, ctx);
@@ -372,7 +456,10 @@ void KalynaKeyExpand(uint64_t* key, kalyna_t* ctx) {
 }
 
 
-void KalynaEncipher(uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext) {
+void KalynaEncipher(const uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext) {
+    if (plaintext == NULL || ctx == NULL || ciphertext == NULL) {
+        return;
+    }
     size_t round = 0;
     memcpy(ctx->state, plaintext, ctx->nb * sizeof(uint64_t));
 
@@ -387,7 +474,10 @@ void KalynaEncipher(uint64_t* plaintext, kalyna_t* ctx, uint64_t* ciphertext) {
     memcpy(ciphertext, ctx->state, ctx->nb * sizeof(uint64_t));
 }
 
-void KalynaDecipher(uint64_t* ciphertext, kalyna_t* ctx, uint64_t* plaintext) {
+void KalynaDecipher(const uint64_t* ciphertext, kalyna_t* ctx, uint64_t* plaintext) {
+    if (ciphertext == NULL || ctx == NULL || plaintext == NULL) {
+        return;
+    }
     size_t round = ctx->nr;
     memcpy(ctx->state, ciphertext, ctx->nb * sizeof(uint64_t));
 
@@ -403,7 +493,7 @@ void KalynaDecipher(uint64_t* ciphertext, kalyna_t* ctx, uint64_t* plaintext) {
 }
 
 
-uint8_t* WordsToBytes(size_t length, uint64_t* words) {
+static uint8_t* WordsToBytes(size_t length, uint64_t* words) {
     uint8_t* bytes;
     if (IsBigEndian()) {
         for (size_t i = 0; i < length; ++i) {
@@ -414,10 +504,10 @@ uint8_t* WordsToBytes(size_t length, uint64_t* words) {
     return bytes;
 }
 
-uint64_t* BytesToWords(size_t length, uint8_t* bytes) {
+static uint64_t* BytesToWords(size_t length, uint8_t* bytes) {
     uint64_t* words = (uint64_t*)bytes;
     if (IsBigEndian()) {
-        for (size_t i = 0; i < length; ++i) {
+        for (size_t i = 0; i < length / sizeof(uint64_t); ++i) {
             words[i] = ReverseWord(words[i]);
         }
     }
@@ -425,28 +515,21 @@ uint64_t* BytesToWords(size_t length, uint8_t* bytes) {
 }
 
 
-uint64_t ReverseWord(uint64_t word) {
+static uint64_t ReverseWord(uint64_t word) {
     uint64_t reversed = 0;
     uint8_t* src = (uint8_t*)&word;
     uint8_t* dst = (uint8_t*)&reversed;
 
     for (size_t i = 0; i < sizeof(uint64_t); ++i) {
-        dst[i] = src[sizeof(uint64_t) - i];
+        dst[i] = src[sizeof(uint64_t) - 1 - i];
     }
     return reversed;
 }
 
 
-int IsBigEndian() {
+static int IsBigEndian(void) {
     unsigned int num = 1;
     /* Check the least significant byte value to determine endianness */
     return (*((uint8_t*)&num) == 0);
-}
-
-void PrintState(size_t length, uint64_t* state) {
-    for (int i = length - 1; i >= 0; --i) {
-        printf("%16.16llx", state[i]);
-    }
-    printf("\n");
 }
 
