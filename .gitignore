@@ -60,3 +60,4 @@ target/
 # Compiled binaries
 reference/kalyna
 src/kalyna
+src/kalyna-benchmark
