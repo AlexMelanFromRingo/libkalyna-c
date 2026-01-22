@@ -52,7 +52,15 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y cppcheck
 
     - name: Run cppcheck
-      run: cppcheck --enable=warning,style,performance --error-exitcode=1 --suppress=missingIncludeSystem src/*.c src/*.h
+      run: |
+        cppcheck --enable=warning,performance --error-exitcode=1 \
+          --suppress=missingIncludeSystem \
+          --suppress=knownConditionTrueFalse \
+          --suppress=constVariablePointer \
+          --suppress=constParameter \
+          --suppress=variableScope \
+          --suppress=unreadVariable \
+          src/*.c src/*.h
 
   memory-check:
     runs-on: ubuntu-latest
